@@ -26,6 +26,7 @@ class BranchListFrame(ttk.LabelFrame):
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent, text="分支（双击切换，右键菜单）")
 
+        self._enabled = True
         self._on_branch_selected: Callable[[str], None] | None = None
         self._on_checkout_branch: Callable[[], None] | None = None
         self._on_set_as_push_target: Callable[[str], None] | None = None
@@ -79,9 +80,11 @@ class BranchListFrame(ttk.LabelFrame):
         self._on_copy_text = on_copy_text
 
     def set_enabled(self, *, enabled: bool) -> None:
-        state = "normal" if enabled else "disabled"
-        self.search_entry.configure(state=state)
-        self.listbox.configure(state=state)
+        self._enabled = bool(enabled)
+        self.search_entry.configure(state=("normal" if self._enabled else "disabled"))
+        # 注意：Listbox 在 disabled 状态下无法插入/删除内容（且不会抛异常），会导致刷新“没有任何返回”。
+        # 这里保持 listbox 可写，交互由 _enabled 标志控制。
+        self.listbox.configure(state="normal")
 
     def set_items(self, items: list[Any]) -> None:
         self._items = list(items or [])
@@ -134,33 +137,47 @@ class BranchListFrame(ttk.LabelFrame):
         return f"{current_mark}{name} {status}"
 
     def _handle_select(self) -> None:
+        if not self._enabled:
+            return
         name = self.get_selected_name()
         if name and self._on_branch_selected is not None:
             self._on_branch_selected(name)
 
     def _handle_double_click(self) -> None:
+        if not self._enabled:
+            return
         if self._on_checkout_branch is not None:
             self._on_checkout_branch()
 
     def _handle_checkout(self) -> None:
+        if not self._enabled:
+            return
         if self._on_checkout_branch is not None:
             self._on_checkout_branch()
 
     def _handle_set_as_target(self) -> None:
+        if not self._enabled:
+            return
         name = self.get_selected_name()
         if name and self._on_set_as_push_target is not None:
             self._on_set_as_push_target(name)
 
     def _handle_delete(self) -> None:
+        if not self._enabled:
+            return
         if self._on_delete_branch is not None:
             self._on_delete_branch()
 
     def _handle_copy(self) -> None:
+        if not self._enabled:
+            return
         name = self.get_selected_name()
         if name and self._on_copy_text is not None:
             self._on_copy_text(name)
 
     def _show_context_menu(self, event: tk.Event) -> None:
+        if not self._enabled:
+            return
         try:
             self.listbox.selection_clear(0, "end")
             idx = self.listbox.nearest(int(event.y))
@@ -174,6 +191,7 @@ class TagListFrame(ttk.LabelFrame):
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent, text="Tag（版本）（右键菜单）")
 
+        self._enabled = True
         self._on_checkout_tag: Callable[[], None] | None = None
         self._on_delete_tag: Callable[[], None] | None = None
         self._on_copy_text: Callable[[str], None] | None = None
@@ -219,9 +237,10 @@ class TagListFrame(ttk.LabelFrame):
         self._on_copy_text = on_copy_text
 
     def set_enabled(self, *, enabled: bool) -> None:
-        state = "normal" if enabled else "disabled"
-        self.search_entry.configure(state=state)
-        self.listbox.configure(state=state)
+        self._enabled = bool(enabled)
+        self.search_entry.configure(state=("normal" if self._enabled else "disabled"))
+        # 同 BranchListFrame：保持 listbox 可写，交互由 _enabled 标志控制。
+        self.listbox.configure(state="normal")
 
     def set_items(self, items: list[Any]) -> None:
         self._items = list(items or [])
@@ -268,19 +287,27 @@ class TagListFrame(ttk.LabelFrame):
         return f"{name} {status}"
 
     def _handle_checkout(self) -> None:
+        if not self._enabled:
+            return
         if self._on_checkout_tag is not None:
             self._on_checkout_tag()
 
     def _handle_delete(self) -> None:
+        if not self._enabled:
+            return
         if self._on_delete_tag is not None:
             self._on_delete_tag()
 
     def _handle_copy(self) -> None:
+        if not self._enabled:
+            return
         name = self.get_selected_name()
         if name and self._on_copy_text is not None:
             self._on_copy_text(name)
 
     def _show_context_menu(self, event: tk.Event) -> None:
+        if not self._enabled:
+            return
         try:
             self.listbox.selection_clear(0, "end")
             idx = self.listbox.nearest(int(event.y))
@@ -349,4 +376,3 @@ class ListsFrame(ttk.PanedWindow):
 
     def get_tags_listbox(self) -> tk.Listbox:
         return self.tags_frame.listbox
-
