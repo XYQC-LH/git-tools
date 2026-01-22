@@ -145,7 +145,13 @@ class AppController:
         repo_loaded = self._repo_root is not None
         idle = not self._running
         current_dir = (self.view.repo_frame.get_repo_path() or "").strip()
-        can_init_repo = idle and (not repo_loaded) and bool(current_dir) and os.path.isdir(os.path.abspath(current_dir))
+        abs_current_dir = os.path.abspath(current_dir) if current_dir else ""
+        can_init_repo = (
+            idle
+            and bool(abs_current_dir)
+            and os.path.isdir(abs_current_dir)
+            and not os.path.exists(os.path.join(abs_current_dir, ".git"))
+        )
         self.view.set_enabled(repo_loaded=repo_loaded, idle=idle, can_init_repo=can_init_repo)
 
     # --- queue / ui updates ---
@@ -253,6 +259,8 @@ class AppController:
             self._apply_enabled_state()
             return
 
+        self.view.repo_frame.set_repo_path(abs_path)
+
         try:
             repo_root = find_repo_root(abs_path)
         except Exception as e:
@@ -266,7 +274,6 @@ class AppController:
             return
 
         self._repo_root = repo_root
-        self.view.repo_frame.set_repo_path(repo_root)
         self._config.add_recent_repo(repo_root)
         self.update_recent_menu()
         self._apply_enabled_state()
@@ -865,6 +872,10 @@ class AppController:
                 return
 
         commands: list[list[str]] = []
+        if self.view.push_frame.get_force_push():
+            # --force-with-lease 需要本地有最新的远程分支信息；否则会报 stale info。
+            # 先 fetch 一次以更新 refs/remotes/<remote>/*，提升成功率与可解释性。
+            commands.append(["fetch", remote, "--prune", "--tags", "--progress"])
 
         if self.view.push_frame.get_create_tag():
             tag_name = self.view.push_frame.get_tag_name().strip()
