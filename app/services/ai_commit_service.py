@@ -14,8 +14,10 @@ AI Commit Message 生成服务。
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 import urllib.error
 import urllib.request
@@ -255,6 +257,189 @@ def _request_commit_message(
     return message
 
 
+def _extract_text_from_stream_chunk(data: dict) -> str:
+    if not isinstance(data, dict):
+        return ""
+
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+
+    delta = first.get("delta")
+    if isinstance(delta, str):
+        return delta
+    if isinstance(delta, dict):
+        content = delta.get("content")
+        if isinstance(content, str):
+            return content
+        text_value = delta.get("text")
+        if isinstance(text_value, str):
+            return text_value
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if isinstance(item, dict):
+                    text_value = item.get("text")
+                    if isinstance(text_value, str):
+                        parts.append(text_value)
+                        continue
+                    content_value = item.get("content")
+                    if isinstance(content_value, str):
+                        parts.append(content_value)
+            return "".join(parts)
+
+    text = first.get("text")
+    if isinstance(text, str):
+        return text
+
+    message = first.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+
+    output_text = data.get("output_text")
+    if isinstance(output_text, str):
+        return output_text
+
+    return ""
+
+
+def _iter_sse_data_payloads(resp: object) -> list[str]:
+    """
+    增量解析 SSE 数据帧，尽早产出 data payload。
+
+    说明：
+    - 不依赖 readline，避免部分环境中“等整行/等结束”才返回。
+    - 以空行分隔事件；一个事件可能包含多条 data: 行。
+    """
+    if not hasattr(resp, "read"):
+        return []
+
+    read = getattr(resp, "read")
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    pending = ""
+    data_lines: list[str] = []
+    payloads: list[str] = []
+
+    while True:
+        chunk = read(256)
+        if not chunk:
+            break
+
+        pending += decoder.decode(chunk)
+
+        while True:
+            line_end = pending.find("\n")
+            if line_end < 0:
+                break
+
+            raw_line = pending[:line_end]
+            pending = pending[line_end + 1 :]
+            line = raw_line.rstrip("\r")
+            stripped = line.strip()
+
+            if not stripped:
+                if data_lines:
+                    payloads.append("\n".join(data_lines))
+                    data_lines = []
+                continue
+
+            if stripped.startswith(":"):
+                continue
+
+            if stripped.startswith("data:"):
+                data_lines.append(stripped[len("data:") :].lstrip())
+
+    pending += decoder.decode(b"", final=True)
+    if pending:
+        for raw_line in pending.splitlines():
+            stripped = raw_line.strip()
+            if stripped.startswith("data:"):
+                data_lines.append(stripped[len("data:") :].lstrip())
+
+    if data_lines:
+        payloads.append("\n".join(data_lines))
+
+    return payloads
+
+
+def _request_commit_message_stream(
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+    messages: list[dict[str, str]],
+    on_stream_text: Callable[[str], None] | None,
+) -> str:
+    endpoint = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "stream": True,
+    }
+
+    req = urllib.request.Request(
+        endpoint,
+        method="POST",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+
+    chunks: list[str] = []
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            for payload_text in _iter_sse_data_payloads(resp):
+                payload_text = str(payload_text or "").strip()
+                if not payload_text:
+                    continue
+                if payload_text == "[DONE]":
+                    break
+
+                try:
+                    data = json.loads(payload_text)
+                except Exception:
+                    continue
+
+                text = _extract_text_from_stream_chunk(data)
+                if not text:
+                    continue
+
+                chunks.append(text)
+                if on_stream_text is not None:
+                    try:
+                        on_stream_text(text)
+                    except Exception:
+                        pass
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        raise RuntimeError(f"AI 请求失败（HTTP {e.code}）：{body or e.reason}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"AI 请求失败：{e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"AI 请求失败：{e}") from e
+
+    message = _normalize_single_line("".join(chunks))
+    if not message:
+        raise RuntimeError("AI 流式返回为空，未生成有效提交信息。")
+    return message
+
+
 def generate_commit_message_with_ai(
     repo_root: str,
     *,
@@ -262,6 +447,8 @@ def generate_commit_message_with_ai(
     api_key: str | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    stream: bool = False,
+    on_stream_text: Callable[[str], None] | None = None,
 ) -> str:
     """
     基于当前仓库改动生成 commit message（单行）。
@@ -272,6 +459,8 @@ def generate_commit_message_with_ai(
         api_key: 可选，显式传入 API Key。未传入时从环境变量读取
         base_url: API 基础端点
         model: 模型名
+        stream: 是否使用流式接口
+        on_stream_text: 流式回调（每次收到新文本块时调用）
     """
     try:
         files_summary, diff_text = _collect_changes(repo_root, stage_all=stage_all)
@@ -290,6 +479,15 @@ def generate_commit_message_with_ai(
         default=DEFAULT_BIGMODEL_MODEL,
     )
     messages = _build_prompt(files_summary=files_summary, diff_text=diff_text)
+    if stream or on_stream_text is not None:
+        return _request_commit_message_stream(
+            api_key=resolved_key,
+            base_url=resolved_base_url,
+            model=resolved_model,
+            messages=messages,
+            on_stream_text=on_stream_text,
+        )
+
     return _request_commit_message(
         api_key=resolved_key,
         base_url=resolved_base_url,

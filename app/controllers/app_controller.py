@@ -800,11 +800,22 @@ class AppController:
                 stage_all=stage_all,
             )
 
+        def generate_ai_message_stream(stage_all: bool, on_chunk: Any) -> str:
+            if not self._repo_root:
+                raise RuntimeError("当前未选择仓库。")
+            return generate_commit_message_with_ai(
+                self._repo_root,
+                stage_all=stage_all,
+                stream=True,
+                on_stream_text=on_chunk,
+            )
+
         commit_info = prompt_commit_dialog(
             self.root,
             default_message="",
             stage_all_default=True,
             on_generate_ai=generate_ai_message,
+            on_generate_ai_stream=generate_ai_message_stream,
         )
         if not commit_info:
             return

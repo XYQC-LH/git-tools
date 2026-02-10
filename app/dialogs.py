@@ -159,6 +159,7 @@ def prompt_commit_dialog(
     default_message: str = "",
     stage_all_default: bool = True,
     on_generate_ai: Callable[[bool], str] | None = None,
+    on_generate_ai_stream: Callable[[bool, Callable[[str], None]], str] | None = None,
 ) -> tuple[str, bool] | None:
     """提示用户输入提交信息，并选择是否暂存全部改动。"""
     result: tuple[str, bool] | None = None
@@ -225,19 +226,39 @@ def prompt_commit_dialog(
         nonlocal generating
         if generating:
             return
-        if on_generate_ai is None:
+        if on_generate_ai is None and on_generate_ai_stream is None:
             return
 
         generating = True
         if btn_ai is not None:
             btn_ai.configure(state="disabled")
         ai_status_var.set("AI 正在生成提交信息，请稍候...")
+        msg_var.set("")
 
         stage_all = bool(stage_all_var.get())
 
+        def append_chunk(chunk: str) -> None:
+            if not chunk:
+                return
+
+            def do_append() -> None:
+                text = str(msg_var.get() or "") + str(chunk)
+                text = text.replace("\r", "").replace("\n", " ")
+                text = " ".join(text.split())
+                msg_var.set(text)
+                entry.icursor("end")
+                ai_status_var.set("AI 正在流式生成...")
+
+            dialog.after(0, do_append)
+
         def worker() -> None:
             try:
-                generated = on_generate_ai(stage_all)
+                if on_generate_ai_stream is not None:
+                    generated = on_generate_ai_stream(stage_all, append_chunk)
+                elif on_generate_ai is not None:
+                    generated = on_generate_ai(stage_all)
+                else:
+                    generated = ""
                 dialog.after(0, lambda: on_ai_done(generated, None))
             except Exception as e:
                 dialog.after(0, lambda: on_ai_done(None, str(e)))
