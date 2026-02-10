@@ -42,6 +42,7 @@ from app.git_utils import (
     write_repo_github_config,
 )
 from app.models import GitCommandError, RepoData
+from app.services.ai_commit_service import generate_commit_message_with_ai
 from app.services.git_stream import stream_git
 from app.services.repo_data_service import collect_repo_data
 from app.ui.main_view import MainView
@@ -791,7 +792,20 @@ class AppController:
         if self._running or not self._repo_root:
             return
 
-        commit_info = prompt_commit_dialog(self.root, default_message="", stage_all_default=True)
+        def generate_ai_message(stage_all: bool) -> str:
+            if not self._repo_root:
+                raise RuntimeError("当前未选择仓库。")
+            return generate_commit_message_with_ai(
+                self._repo_root,
+                stage_all=stage_all,
+            )
+
+        commit_info = prompt_commit_dialog(
+            self.root,
+            default_message="",
+            stage_all_default=True,
+            on_generate_ai=generate_ai_message,
+        )
         if not commit_info:
             return
         message, stage_all = commit_info

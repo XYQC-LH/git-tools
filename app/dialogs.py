@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
+
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -155,13 +158,15 @@ def prompt_commit_dialog(
     *,
     default_message: str = "",
     stage_all_default: bool = True,
+    on_generate_ai: Callable[[bool], str] | None = None,
 ) -> tuple[str, bool] | None:
     """提示用户输入提交信息，并选择是否暂存全部改动。"""
     result: tuple[str, bool] | None = None
+    generating = False
 
     dialog = tk.Toplevel(parent)
     dialog.title("提交(Commit)")
-    dialog.geometry("640x220")
+    dialog.geometry("760x260")
     dialog.transient(parent)
     dialog.grab_set()
 
@@ -176,15 +181,74 @@ def prompt_commit_dialog(
     entry = ttk.Entry(frame, textvariable=msg_var)
     entry.grid(row=0, column=1, sticky="we", pady=(0, 8))
 
+    btn_ai: ttk.Button | None = None
+
     ttk.Checkbutton(frame, text="暂存全部改动（git add -A）", variable=stage_all_var).grid(
         row=1, column=0, columnspan=2, sticky="w", pady=(0, 8)
     )
-    ttk.Label(frame, text="建议：首次提交可勾选“暂存全部改动”。", foreground="gray").grid(
+    ttk.Label(frame, text="建议：你可以手写，也可以点击“AI生成”自动填写。", foreground="gray").grid(
         row=2, column=0, columnspan=2, sticky="w", pady=(0, 8)
     )
 
+    ai_status_var = tk.StringVar(value="")
+    ttk.Label(frame, textvariable=ai_status_var, foreground="gray").grid(
+        row=3, column=0, columnspan=2, sticky="w", pady=(0, 8)
+    )
+
+    def normalize_single_line(text: str) -> str:
+        lines = [segment.strip() for segment in str(text or "").replace("\r", "\n").split("\n") if segment.strip()]
+        merged = " ".join(lines).strip()
+        return " ".join(merged.split())
+
+    def on_ai_done(generated: str | None, error: str | None) -> None:
+        nonlocal generating
+        generating = False
+        if btn_ai is not None:
+            btn_ai.configure(state="normal")
+
+        if error:
+            ai_status_var.set("AI 生成失败，请手写或重试。")
+            messagebox.showerror("AI生成失败", str(error), parent=dialog)
+            return
+
+        text = normalize_single_line(generated or "")
+        if not text:
+            ai_status_var.set("AI 未返回有效内容，请手写或重试。")
+            return
+
+        msg_var.set(text)
+        entry.focus_set()
+        entry.icursor("end")
+        ai_status_var.set("AI 已生成提交信息，可直接提交或继续编辑。")
+
+    def on_generate() -> None:
+        nonlocal generating
+        if generating:
+            return
+        if on_generate_ai is None:
+            return
+
+        generating = True
+        if btn_ai is not None:
+            btn_ai.configure(state="disabled")
+        ai_status_var.set("AI 正在生成提交信息，请稍候...")
+
+        stage_all = bool(stage_all_var.get())
+
+        def worker() -> None:
+            try:
+                generated = on_generate_ai(stage_all)
+                dialog.after(0, lambda: on_ai_done(generated, None))
+            except Exception as e:
+                dialog.after(0, lambda: on_ai_done(None, str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def on_ok() -> None:
         nonlocal result
+        if generating:
+            messagebox.showinfo("提示", "AI 仍在生成中，请稍候或取消后手写。", parent=dialog)
+            return
         msg = msg_var.get().strip()
         if not msg:
             messagebox.showerror("错误", "提交信息不能为空。", parent=dialog)
@@ -199,9 +263,12 @@ def prompt_commit_dialog(
         dialog.destroy()
 
     btn_frame = ttk.Frame(frame)
-    btn_frame.grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
+    btn_frame.grid(row=4, column=0, columnspan=2, sticky="e", pady=(8, 0))
     ttk.Button(btn_frame, text="取消", command=on_cancel).pack(side="right")
     ttk.Button(btn_frame, text="提交", command=on_ok).pack(side="right", padx=(0, 8))
+    if on_generate_ai is not None:
+        btn_ai = ttk.Button(btn_frame, text="AI生成", command=on_generate)
+        btn_ai.pack(side="right", padx=(0, 8))
 
     dialog.bind("<Escape>", lambda _e: on_cancel())
     dialog.bind("<Return>", lambda _e: on_ok())
