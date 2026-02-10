@@ -91,6 +91,26 @@ python start.py
 python git_repo_manager_gui.py
 ```
 
+## 打包为 Windows EXE
+
+> 目标机器仍需安装 Git，并确保 `git` 在 PATH 中可用。
+
+### 一键打包（推荐）
+
+```powershell
+./build_exe.ps1
+```
+
+输出文件：`dist/git-repo-manager.exe`
+
+### 手动打包
+
+```powershell
+python -m venv ".venv"
+./.venv/Scripts/python -m pip install --upgrade pip pyinstaller
+./.venv/Scripts/python -m PyInstaller --clean --noconsole --onefile --name "git-repo-manager" "start.py"
+```
+
 ### 基本操作流程
 
 1. **选择仓库**：点击「选择...」按钮或从「最近」菜单选择仓库

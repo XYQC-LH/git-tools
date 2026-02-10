@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -72,8 +74,8 @@ class AppController:
 
         self._q: queue.Queue[tuple] = queue.Queue()
 
-        self.root.geometry(self._config.window_geometry)
         self.root.minsize(960, 650)
+        self._apply_initial_window_geometry()
         self.root.bind("<Configure>", self._on_window_configure)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -89,6 +91,99 @@ class AppController:
         )
         self.view.repo_frame.set_repo_path(initial_repo)
         self.try_set_repo(initial_repo, auto_refresh=True)
+
+    # --- window geometry ---
+
+    _GEOMETRY_RE = re.compile(r"^(?P<w>\d+)x(?P<h>\d+)(?P<x>[+-]\d+)?(?P<y>[+-]\d+)?$")
+
+    def _apply_initial_window_geometry(self) -> None:
+        geometry = str(self._config.window_geometry or "").strip()
+        match = self._GEOMETRY_RE.match(geometry)
+        if not match:
+            self._reset_window_geometry()
+            return
+
+        width = int(match.group("w"))
+        height = int(match.group("h"))
+        x_str = match.group("x")
+        y_str = match.group("y")
+
+        try:
+            if x_str is None or y_str is None:
+                self._center_window(width=width, height=height)
+                return
+
+            x = int(x_str)
+            y = int(y_str)
+        except ValueError:
+            self._reset_window_geometry()
+            return
+
+        # 先应用用户几何信息；若发现窗口完全跑到屏幕外，则重置并居中。
+        try:
+            self.root.geometry(f"{width}x{height}{x_str}{y_str}")
+        except Exception:
+            self._reset_window_geometry()
+            return
+
+        if not self._window_intersects_visible_area(width=width, height=height, x=x, y=y):
+            self._reset_window_geometry(width=width, height=height)
+
+    def _reset_window_geometry(self, *, width: int = 1200, height: int = 760) -> None:
+        self._center_window(width=width, height=height)
+        # 尽快修正持久化配置，避免“窗口丢失”后反复发生。
+        self._config.window_geometry = self.root.geometry()
+
+    def _center_window(self, *, width: int, height: int) -> None:
+        left, top, right, bottom = self._get_virtual_screen_bounds()
+        screen_w = max(1, right - left)
+        screen_h = max(1, bottom - top)
+
+        x = left + max(0, (screen_w - width) // 2)
+        y = top + max(0, (screen_h - height) // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _get_virtual_screen_bounds(self) -> tuple[int, int, int, int]:
+        """
+        返回虚拟屏幕边界 (left, top, right, bottom)。
+
+        - Windows: 使用 SM_*VIRTUALSCREEN 支持多显示器/负坐标。
+        - 其他平台：退化为 Tk 的主屏幕尺寸。
+        """
+        if sys.platform == "win32":
+            try:
+                import ctypes  # 局部导入避免非 Windows 环境问题
+
+                user32 = ctypes.windll.user32
+                left = int(user32.GetSystemMetrics(76))  # SM_XVIRTUALSCREEN
+                top = int(user32.GetSystemMetrics(77))  # SM_YVIRTUALSCREEN
+                width = int(user32.GetSystemMetrics(78))  # SM_CXVIRTUALSCREEN
+                height = int(user32.GetSystemMetrics(79))  # SM_CYVIRTUALSCREEN
+                return left, top, left + width, top + height
+            except Exception:
+                pass
+
+        width = int(self.root.winfo_screenwidth())
+        height = int(self.root.winfo_screenheight())
+        return 0, 0, width, height
+
+    def _window_intersects_visible_area(self, *, width: int, height: int, x: int, y: int) -> bool:
+        left, top, right, bottom = self._get_virtual_screen_bounds()
+
+        # 只要有一小块在可见范围内，就认为“可找得到窗口”。
+        min_visible = 64
+        win_left, win_top = x, y
+        win_right, win_bottom = x + width, y + height
+
+        if win_right <= left + min_visible:
+            return False
+        if win_left >= right - min_visible:
+            return False
+        if win_bottom <= top + min_visible:
+            return False
+        if win_top >= bottom - min_visible:
+            return False
+        return True
 
     # --- lifecycle ---
 
